@@ -24,7 +24,7 @@ const RSPFAIL = "fail"
 
 const oPSUBMES = "sub"
 const oPPUBMES = "pub"
-const oPCANCELSUB = "cancellsub"
+const oPCANCELSUB = "cancelsub"
 
 //Spubor .
 type Spubor struct {
@@ -40,7 +40,7 @@ type mesmap struct {
 type mesoperation struct {
 	msgid  string
 	oprate string
-	//sub:chan string  pub:string cancellsub:opcancellsub
+	//sub:chan string  pub:string cancelsub:opcancelsub
 	initem interface{}
 	//op result
 	outitem chan oprsp
@@ -112,11 +112,11 @@ func (m *mesmap) init() {
 					}
 					opn.outitem <- rsp
 
-				//cancell sub
+				//cancel sub
 				case oPCANCELSUB:
-					var cancellop = opn.initem.(opcancellsub)
-					index := cancellop.index
-					msgid := cancellop.msgid
+					var cancelop = opn.initem.(opcancelsub)
+					index := cancelop.index
+					msgid := cancelop.msgid
 					var rsp oprsp
 					var v recver
 					var ok bool
@@ -132,7 +132,7 @@ func (m *mesmap) init() {
 					delete(*m.mes[msgid], index)
 
 					rsp.index = index
-					rsp.rspmsg = fmt.Sprintf("succ cancell sub,msgid:%s,index:%d", msgid, index)
+					rsp.rspmsg = fmt.Sprintf("succ cancel sub,msgid:%s,index:%d", msgid, index)
 					opn.outitem <- rsp
 
 				default:
@@ -201,19 +201,19 @@ func (s *Spubor) PubMes(msgid string, item string) error {
 	}
 }
 
-type opcancellsub struct {
+type opcancelsub struct {
 	index int64
 	msgid string
 }
 
-//CancellSub .
-func (s *Spubor) CancellSub(msgid string, index int64) error {
+//CancelSub .
+func (s *Spubor) CancelSub(msgid string, index int64) error {
 	lindex := s.getMesListIndex(msgid)
 	var op mesoperation
 	op.msgid = msgid
 	op.oprate = oPCANCELSUB
 	op.outitem = make(chan oprsp)
-	op.initem = opcancellsub{index, msgid}
+	op.initem = opcancelsub{index, msgid}
 	select {
 	case s.mesmapl[lindex].opbufchan <- op:
 		select {
