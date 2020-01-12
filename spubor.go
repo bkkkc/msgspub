@@ -14,7 +14,7 @@ import (
 const MESMAPLISTSIZE = 8
 
 //DEFAULTMESBUFSIZE .
-const DEFAULTMESBUFSIZE = 4
+const DEFAULTMESBUFSIZE = 100
 
 //RSPSUCC .
 const RSPSUCC = "succ"
@@ -33,14 +33,14 @@ type Spubor struct {
 	mesmapl []*mesmap
 }
 type mesmap struct {
-	mes       map[string][]recver
+	mes       map[string]*map[int64]recver
 	opbufchan chan mesoperation
 }
 
 type mesoperation struct {
 	msgid  string
 	oprate string
-	//sub:chan string  pub:string
+	//sub:chan string  pub:string cancellsub:opcancellsub
 	initem interface{}
 	//op result
 	outitem chan oprsp
@@ -57,7 +57,7 @@ type recver struct {
 }
 
 func (m *mesmap) init() {
-	m.mes = make(map[string][]recver, 64)
+	m.mes = make(map[string]*map[int64]recver, 64)
 	//buf the operation
 	m.opbufchan = make(chan mesoperation, 1000)
 	//handle bufchan
@@ -70,9 +70,14 @@ func (m *mesmap) init() {
 				//sub
 				case oPSUBMES:
 					var rcver recver
-					rcver.index = int64(len(m.mes[msgid]))
+					rcver.index = int64(time.Now().UnixNano())
 					rcver.recvchan = opn.initem.(chan string)
-					m.mes[msgid] = append(m.mes[msgid], rcver)
+
+					if _, ok := m.mes[msgid]; !ok {
+						var tmp = make(map[int64]recver)
+						m.mes[msgid] = &tmp
+					}
+					(*m.mes[msgid])[rcver.index] = rcver
 
 					var rsp oprsp
 					rsp.index = rcver.index
@@ -83,15 +88,20 @@ func (m *mesmap) init() {
 					var item = opn.initem.(string)
 					var succ = true
 					var failcount int
-					for k, v := range m.mes[msgid] {
-						ticker := time.Tick(2 * time.Second)
-						select {
-						case <-ticker:
-							succ = false
-							failcount++
-							log.Printf("recv chan is timeout,msgid:%s,index:%d", msgid, k)
-						case v.recvchan <- item:
+					for k, v := range *m.mes[msgid] {
+						if v.recvchan == nil {
+							delete(*m.mes[msgid], k)
+							continue
 						}
+						go func(recvchan chan string) {
+							select {
+							case <-time.After(2 * time.Second):
+								succ = false
+								failcount++
+								log.Printf("recv chan is timeout,msgid:%s,index:", msgid)
+							case recvchan <- item:
+							}
+						}(v.recvchan)
 					}
 					var rsp oprsp
 					if succ == false {
@@ -104,6 +114,26 @@ func (m *mesmap) init() {
 
 				//cancell sub
 				case oPCANCELSUB:
+					var cancellop = opn.initem.(opcancellsub)
+					index := cancellop.index
+					msgid := cancellop.msgid
+					var rsp oprsp
+					var v recver
+					var ok bool
+					v, ok = (*m.mes[msgid])[index]
+					if !ok {
+						rsp.index = -1
+						rsp.rspmsg = fmt.Sprintf("sub record not fount,msgid:%s,index:%d", msgid, index)
+						opn.outitem <- rsp
+						continue
+					} else if v.recvchan != nil {
+						close(v.recvchan)
+					}
+					delete(*m.mes[msgid], index)
+
+					rsp.index = index
+					rsp.rspmsg = fmt.Sprintf("succ cancell sub,msgid:%s,index:%d", msgid, index)
+					opn.outitem <- rsp
 
 				default:
 					log.Println("invalid opreation:", opn.oprate)
@@ -142,7 +172,7 @@ func (s *Spubor) SubMes(msgid string) (index int64, subchan chan string, err err
 	op.outitem = make(chan oprsp)
 
 	select {
-	case s.mesmapl[lindex].opbufchan <- op:
+	case (*s.mesmapl[lindex]).opbufchan <- op:
 		select {
 		case rsp := <-op.outitem:
 			return rsp.index, subchan, nil
@@ -166,6 +196,32 @@ func (s *Spubor) PubMes(msgid string, item string) error {
 			if rsp.index < 0 {
 				return errors.New(rsp.rspmsg)
 			}
+			return nil
+		}
+	}
+}
+
+type opcancellsub struct {
+	index int64
+	msgid string
+}
+
+//CancellSub .
+func (s *Spubor) CancellSub(msgid string, index int64) error {
+	lindex := s.getMesListIndex(msgid)
+	var op mesoperation
+	op.msgid = msgid
+	op.oprate = oPCANCELSUB
+	op.outitem = make(chan oprsp)
+	op.initem = opcancellsub{index, msgid}
+	select {
+	case s.mesmapl[lindex].opbufchan <- op:
+		select {
+		case rsp := <-op.outitem:
+			if rsp.index < 0 {
+				return errors.New(rsp.rspmsg)
+			}
+			fmt.Println(rsp)
 			return nil
 		}
 	}
